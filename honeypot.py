@@ -54,7 +54,7 @@ LABEL_COLOR = {
 }
 
 # ============================================================
-# PRINT QUEUE â€” Menulis ke stdout & file
+# PRINT QUEUE — Menulis ke stdout & file
 # ============================================================
 print_queue = queue.Queue()
 
@@ -75,7 +75,7 @@ def printer_thread():
 
         color = LABEL_COLOR.get(label, C.WHITE)
 
-        # Terminal
+        # Terminal Output
         line = (
             f"{C.DIM}[{ts}]{C.RESET} "
             f"{C.BOLD}{color}{label:<16}{C.RESET} "
@@ -126,19 +126,24 @@ ip_stats   = defaultdict(lambda: {
 })
 
 # ============================================================
-# PERBAIKAN LOGIKA KLASIFIKASI (Anti-Lompat)
+# LOGIKA KLASIFIKASI ANCAMAN (Sudah Diperbaiki)
 # ============================================================
 def get_label(s: dict, now: float) -> str:
     tcp        = s["tcp_req"]
     udp        = s["udp_req"]
-    ports      = len(s["ports"])
-    scan_ports = len(s["scan_ports"])   
+    ports      = len(s["ports"])        # Window 30 detik
+    scan_ports = len(s["scan_ports"])   # Window 120 detik
 
-    # 1. Deteksi Port Scan Terlebih Dahulu
-    if scan_ports >= PORTSCAN_THRESHOLD and ports >= 3:
+    # 1. Deteksi Port Scan Terlebih Dahulu (Berbasis rentang waktu 120 detik)
+    if scan_ports >= PORTSCAN_THRESHOLD:
+        # Jika aktivitas port scan sangat masif, naikkan status ke DDoS Flood
+        if tcp >= DDOS_TCP_THRESHOLD:
+            return "DDOS TCP FLOOD"
+        if udp >= DDOS_UDP_THRESHOLD:
+            return "DDOS UDP FLOOD"
         return "PORT SCAN"
 
-    # 2. Kunci Status Brute Force
+    # 2. Kunci Status Brute Force (Hanya jika menyerang sedikit port < 3)
     if (tcp >= BRUTEFORCE_THRESHOLD and ports < 3) or s["has_been_bruteforce"]:
         if tcp < BRUTEFORCE_THRESHOLD and s["has_been_bruteforce"]:
             return "BRUTE FORCE"
@@ -150,7 +155,7 @@ def get_label(s: dict, now: float) -> str:
             
         return "BRUTE FORCE"
 
-    # 3. Deteksi DDoS Murni
+    # 3. Deteksi DDoS Murni (Target ke port spesifik secara intensif)
     if tcp >= DDOS_TCP_THRESHOLD:
         return "DDOS TCP FLOOD"
     if udp >= DDOS_UDP_THRESHOLD:
@@ -159,7 +164,7 @@ def get_label(s: dict, now: float) -> str:
     return "NORMAL"
 
 # ============================================================
-# HANDLER
+# HANDLER TRAFFIC
 # ============================================================
 def handle_traffic(ip: str, port: int, proto: str) -> None:
     now = time.time()
@@ -184,11 +189,12 @@ def handle_traffic(ip: str, port: int, proto: str) -> None:
             s["tcp_req"] += 1
         else:
             s["udp_req"] += 1
+            
         s["ports"].add(port)
         s["scan_ports"].add(port)   
 
         label      = get_label(s, now)
-        uniq_ports = len(s["ports"])
+        uniq_ports = len(s["scan_ports"]) # Menggunakan scan_ports untuk visualisasi log yang akurat
         tcp_req    = s["tcp_req"]
         udp_req    = s["udp_req"]
 
@@ -236,6 +242,10 @@ def start_udp_listener(port: int, ready: threading.Event, fail: list) -> None:
 # MAIN PROGRAM
 # ============================================================
 if __name__ == "__main__":
+    # Memperbaiki handling karakter aneh pada terminal Windows/Linux tertentu
+    if sys.platform == "win32":
+        os.system('color')
+
     sys.stdout.reconfigure(line_buffering=True)
 
     pt = threading.Thread(target=printer_thread, daemon=False)
@@ -263,7 +273,7 @@ if __name__ == "__main__":
         if err:
             failed_ports.append(("TCP", p, err[0]))
         else:
-            print(f"  \033[92mâœ“\033[0m TCP listener port {p}", flush=True)
+            print(f"  \033[92m✓\033[0m TCP listener port {p}", flush=True)
 
     for p in MONITORED_UDP:
         ev, err = threading.Event(), []
@@ -273,9 +283,14 @@ if __name__ == "__main__":
         if err:
             failed_ports.append(("UDP", p, err[0]))
         else:
-            print(f"  \033[92mâœ“\033[0m UDP listener port {p}", flush=True)
+            print(f"  \033[92m✓\033[0m UDP listener port {p}", flush=True)
 
-    print(f"\n  Honeypot aktif! Menghitung mundur 6 menit penelitian...\n", flush=True)
+    if failed_ports:
+        print("\n[!] Beberapa port gagal dibuka (mungkin sedang digunakan aplikasi lain):")
+        for proto, port, err in failed_ports:
+            print(f"  - {proto} {port}: {err}")
+
+    print(f"\nHoneypot aktif! Menghitung mundur 6 menit penelitian...\n", flush=True)
 
     start_time = time.time()
     try:
